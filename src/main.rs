@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
+use clap::Parser;
 use reqwest::Client;
 use scraper::{Html, Selector};
 
@@ -37,21 +38,40 @@ const KEYWORD_PROMPT: &str = r##"
 {chinese_text}
 "##;
 
-const DEEPSEEK_API_KEY: &str = env!("DEEPSEEK_API_KEY");
 const DEEPSEEK_API_BASE: &str = "https://api.deepseek.com/chat/completions";
 
-struct SyoSeTu {
-    client: Arc<Client>,
+#[derive(Parser, Debug)]
+#[command(author, version, about = "syosetu scraper")]
+struct Args {
+    /// Novel index page url
+    #[arg(long)]
+    url: String,
+
+    /// DeepSeek API key
+    #[arg(long)]
+    api_key: String,
+
+    /// Model name used when calling DeepSeek API
+    #[arg(long, default_value = "deepseek-chat")]
+    model: String,
 }
 
-impl SyoSeTu {
-    fn new() -> Self {
-        SyoSeTu {
+struct SyosetuClient {
+    client: Arc<Client>,
+    api_key: String,
+    model: String,
+}
+
+impl SyosetuClient {
+    fn new(api_key: String, model: String) -> Self {
+        SyosetuClient {
             client: Arc::new(Client::new()),
+            api_key,
+            model,
         }
     }
 
-    async fn fetch_meta(&self, url: &str) -> Result<()> {
+    async fn process_novel(&self, url: &str) -> Result<()> {
         // 获取目录页面
         let directory_html = self
             .client
@@ -102,8 +122,8 @@ impl SyoSeTu {
                     .filter(|t| !t.is_empty())
                     .collect::<Vec<_>>()
                     .join("\n");
-                let trans = self.translate(&content).await?;
-                let new_keywords = self.fetch_keyword(&trans, &content, Vec::new()).await?;
+                let trans = self.translate_text(&content).await?;
+                let new_keywords = self.extract_keywords(&trans, &content, Vec::new()).await?;
                 println!("{trans}");
                 for keyword in new_keywords {
                     println!("{keyword}")
@@ -114,9 +134,9 @@ impl SyoSeTu {
         Ok(())
     }
 
-    async fn translate(&self, input: &str) -> Result<String> {
+    async fn translate_text(&self, input: &str) -> Result<String> {
         let req = serde_json::json!({
-           "model": "deepseek-reasoner",
+           "model": self.model,
            "messages": [
                {"role": "user", "content": TRANSLATE_PROMPT.replace("{}", input)}
            ],
@@ -128,7 +148,7 @@ impl SyoSeTu {
             .client
             .post(DEEPSEEK_API_BASE)
             .json(&req)
-            .header("Authorization", format!("Bearer {DEEPSEEK_API_KEY}"))
+            .header("Authorization", format!("Bearer {}", self.api_key))
             .send()
             .await?;
         // println!("{}", resp.text().await.unwrap());
@@ -144,14 +164,14 @@ impl SyoSeTu {
         Ok(output)
     }
 
-    async fn fetch_keyword(
+    async fn extract_keywords(
         &self,
         zh: &str,
         jp: &str,
         keywords: Vec<String>,
     ) -> Result<Vec<String>> {
         let req = serde_json::json!({
-           "model": "deepseek-chat",
+           "model": self.model,
            "messages": [
                {"role": "user", "content": KEYWORD_PROMPT.replace("{existing_pairs}", &format!("{keywords:?}")).replace("{japanese_text}", jp).replace("{chineses_text}", zh)}
            ],
@@ -163,7 +183,7 @@ impl SyoSeTu {
             .client
             .post(DEEPSEEK_API_BASE)
             .json(&req)
-            .header("Authorization", format!("Bearer {DEEPSEEK_API_KEY}"))
+            .header("Authorization", format!("Bearer {}", self.api_key))
             .send()
             .await?;
         // println!("{}", resp.text().await.unwrap());
@@ -183,6 +203,7 @@ impl SyoSeTu {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let client = SyoSeTu::new();
-    client.fetch_meta("empty").await
+    let args = Args::parse();
+    let client = SyosetuClient::new(args.api_key, args.model);
+    client.process_novel(&args.url).await
 }

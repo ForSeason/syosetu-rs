@@ -4,7 +4,9 @@ use anyhow::{anyhow, Result};
 use reqwest::Client;
 use scraper::{Html, Selector};
 
+/// syosetu 网页的基础地址
 pub const SYOSETU_API_BASE: &str = "https://ncode.syosetu.com/";
+/// 发送请求时使用的 UA 字符串
 const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
 AppleWebKit/537.36 (KHTML, like Gecko) \
 Chrome/136.0.0.0 Safari/537.36 Edg/136.0.0.0";
@@ -37,12 +39,16 @@ const KEYWORD_PROMPT: &str = r##"请根据以下已提取的翻译列表、日�
 
 const DEEPSEEK_API_BASE: &str = "https://api.deepseek.com/chat/completions";
 
+/// 目录中每个章节的基本信息
 #[derive(Clone)]
 pub struct Chapter {
+    /// 章节的相对路径
     pub path: String,
+    /// 章节标题
     pub title: String,
 }
 
+/// 网络请求及翻译相关操作的封装
 pub struct SyosetuClient {
     client: Arc<Client>,
     api_key: String,
@@ -50,6 +56,7 @@ pub struct SyosetuClient {
 }
 
 impl SyosetuClient {
+    /// 创建新的客户端实例
     pub fn new(api_key: String, model: String) -> Self {
         SyosetuClient {
             client: Arc::new(Client::new()),
@@ -58,6 +65,7 @@ impl SyosetuClient {
         }
     }
 
+    /// 抓取目录页面并解析出章节列表
     pub async fn fetch_directory(&self, url: &str) -> Result<Vec<Chapter>> {
         let directory_html = self
             .client
@@ -89,6 +97,7 @@ impl SyosetuClient {
         Ok(links)
     }
 
+    /// 下载单个章节的正文内容
     pub async fn fetch_chapter(&self, path: &str) -> Result<String> {
         let full_url = format!("{SYOSETU_API_BASE}{path}");
         let content_html = self
@@ -115,6 +124,7 @@ impl SyosetuClient {
         }
     }
 
+    /// 调用 DeepSeek 接口翻译文本
     pub async fn translate_text(
         &self,
         input: &str,
@@ -158,6 +168,7 @@ impl SyosetuClient {
         Ok(output)
     }
 
+    /// 从翻译结果中进一步提取新的专有名词对照
     pub async fn extract_keywords(
         &self,
         zh: &str,

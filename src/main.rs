@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 
 use crate::app::App;
-use crate::memory::JsonStore;
+use crate::memory::{JsonStore, JsonTranslationStore};
 use crate::syosetu::SyosetuClient;
 
 mod app;
@@ -10,6 +10,7 @@ mod memory;
 mod syosetu;
 mod ui;
 
+/// 命令行参数定义
 #[derive(Parser, Debug)]
 #[command(author, version, about = "syosetu scraper")]
 struct Args {
@@ -26,6 +27,7 @@ struct Args {
     model: String,
 }
 
+/// 解析参数并启动应用
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -39,6 +41,7 @@ async fn main() -> Result<()> {
 
     let client = SyosetuClient::new(args.api_key, args.model);
     let store = JsonStore::new("keywords.json");
+    let trans_store = JsonTranslationStore::new("translations.json");
     let app = App::new(novel_id);
-    app.run(&args.url, &client, &store).await
+    app.run(&args.url, &client, &store, &trans_store).await
 }

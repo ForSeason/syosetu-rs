@@ -225,22 +225,25 @@ impl App {
                                     if let Some(&idx) = self.filtered.get(self.selected) {
                                         let chapter = &self.chapters[idx];
                                         self.scroll = 0;
-                                        self.current_chapter = Some(chapter.path.clone());
-                                        if let Some(trans) = trans_store.load(&self.novel_id, &chapter.path)? {
+                                        if let Some(trans) =
+                                            trans_store.load(&self.novel_id, &chapter.path)?
+                                        {
+                                            self.current_chapter = Some(chapter.path.clone());
                                             self.translation = trans;
                                             self.state = AppState::Reading;
-                                        } else {
-                                            if !self.processing.contains_key(&chapter.path) {
-                                                self.spawn_processing(
-                                                    chapter.clone(),
-                                                    site.clone(),
-                                                    translator.clone(),
-                                                    kw_store.clone(),
-                                                    trans_store.clone(),
-                                                );
-                                            }
+                                        } else if self.processing.contains_key(&chapter.path) {
+                                            self.current_chapter = Some(chapter.path.clone());
                                             self.translation = "Processing...".to_string();
                                             self.state = AppState::Reading;
+                                        } else {
+                                            self.spawn_processing(
+                                                chapter.clone(),
+                                                site.clone(),
+                                                translator.clone(),
+                                                kw_store.clone(),
+                                                trans_store.clone(),
+                                            );
+                                            // stay in directory so user can queue more tasks
                                         }
                                     }
                                 }

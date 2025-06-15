@@ -3,7 +3,7 @@ use clap::Parser;
 
 use crate::app::App;
 use crate::memory::{JsonStore, JsonTranslationStore};
-use crate::syosetu::SyosetuClient;
+use crate::syosetu::{NcodeSite, OrgSite, NovelSite, Translator};
 
 mod app;
 mod memory;
@@ -39,9 +39,14 @@ async fn main() -> Result<()> {
         .unwrap_or("novel")
         .to_string();
 
-    let client = SyosetuClient::new(args.api_key, args.model);
+    let translator = Translator::new(args.api_key, args.model);
+    let site: Box<dyn NovelSite> = if args.url.contains("syosetu.org") {
+        Box::new(OrgSite::new())
+    } else {
+        Box::new(NcodeSite::new())
+    };
     let store = JsonStore::new("keywords.json");
     let trans_store = JsonTranslationStore::new("translations.json");
     let app = App::new(novel_id);
-    app.run(&args.url, &client, &store, &trans_store).await
+    app.run(&args.url, site.as_ref(), &translator, &store, &trans_store).await
 }

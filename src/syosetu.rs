@@ -2,8 +2,18 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use reqwest::Client;
+use curl::easy::{Easy2, Handler, HttpVersion, List, WriteError};
 use scraper::{Html, Selector};
 use async_trait::async_trait;
+
+struct Sink(Vec<u8>);
+
+impl Handler for Sink {
+    fn write(&mut self, data: &[u8]) -> std::result::Result<usize, WriteError> {
+        self.0.extend_from_slice(data);
+        Ok(data.len())
+    }
+}
 
 /// 发送请求时使用的 UA 字符串
 const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.0.0";
@@ -286,15 +296,28 @@ impl NovelSite for OrgSite {
     }
 
     async fn fetch_chapter(&self, url: &str) -> Result<String> {
-        let content_html = self
-            .client
-            .get(url)
-            .header("User-Agent", USER_AGENT)
-            .header("Accept-Language", "en-US,en;q=0.9,ja;q=0.8")
-            .send()
-            .await?
-            .text()
-            .await?;
+        let url = url.to_string();
+        let content_html = tokio::task::spawn_blocking(move || -> Result<String> {
+            let mut easy = Easy2::new(Sink(Vec::new()));
+            easy.url(&url)?;
+            easy.http_version(HttpVersion::V2TLS)?;
+            easy.useragent(USER_AGENT)?;
+            let mut headers = List::new();
+            headers.append("Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")?;
+            headers.append("Accept-Language: ja,en-US;q=0.9,en;q=0.8")?;
+            headers.append("Sec-Fetch-Dest: document")?;
+            headers.append("Sec-Fetch-Mode: navigate")?;
+            headers.append("Sec-Fetch-Site: none")?;
+            headers.append("Upgrade-Insecure-Requests: 1")?;
+            easy.http_headers(headers)?;
+            easy.perform()?;
+            let status = easy.response_code()?;
+            if status != 200 {
+                return Err(anyhow!(format!("unexpected status {status}")));
+            }
+            Ok(String::from_utf8_lossy(&easy.get_ref().0).to_string())
+        })
+        .await??;
         let document = Html::parse_document(&content_html);
         let body_selector = Selector::parse("div#honbun")
             .map_err(|e| anyhow!("selector parse error: {e}"))?;

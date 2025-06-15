@@ -1,12 +1,12 @@
 use anyhow::Result;
 use clap::Parser;
-use log::{error, LevelFilter};
-use std::fs::OpenOptions;
 use env_logger::{Builder, Target};
+use log::{LevelFilter, error};
+use std::fs::OpenOptions;
 
 use crate::app::App;
 use crate::memory::{JsonStore, JsonTranslationStore};
-use crate::syosetu::{NcodeSite, OrgSite, NovelSite, Translator};
+use crate::syosetu::{NcodeSite, NovelSite, OrgSite, Translator};
 
 mod app;
 mod memory;
@@ -26,7 +26,7 @@ struct Args {
     api_key: String,
 
     /// Model name used when calling DeepSeek API
-    #[arg(long, default_value = "deepseek-chat")]
+    #[arg(long, default_value = "deepseek-reasoner")]
     model: String,
 }
 

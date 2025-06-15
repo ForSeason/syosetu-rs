@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
+use log::error;
 
 use crate::app::App;
 use crate::memory::{JsonStore, JsonTranslationStore};
@@ -30,6 +31,7 @@ struct Args {
 /// 解析参数并启动应用
 #[tokio::main]
 async fn main() -> Result<()> {
+    env_logger::init();
     let args = Args::parse();
     let novel_id = args
         .url
@@ -48,5 +50,11 @@ async fn main() -> Result<()> {
     let store = JsonStore::new("keywords.json");
     let trans_store = JsonTranslationStore::new("translations.json");
     let app = App::new(novel_id);
-    app.run(&args.url, site.as_ref(), &translator, &store, &trans_store).await
+    let result = app
+        .run(&args.url, site.as_ref(), &translator, &store, &trans_store)
+        .await;
+    if let Err(ref e) = result {
+        error!("Application error: {:?}", e);
+    }
+    result
 }

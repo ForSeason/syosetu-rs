@@ -3,13 +3,10 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use reqwest::Client;
 use scraper::{Html, Selector};
+use async_trait::async_trait;
 
-/// syosetu 网页的基础地址
-pub const SYOSETU_API_BASE: &str = "https://ncode.syosetu.com/";
 /// 发送请求时使用的 UA 字符串
-const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
-AppleWebKit/537.36 (KHTML, like Gecko) \
-Chrome/136.0.0.0 Safari/537.36 Edg/136.0.0.0";
+const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.0.0";
 
 const TRANSLATE_PROMPT: &str = r##"请将以下日文内容完整、准确地翻译成中文。
 要求：
@@ -42,85 +39,26 @@ const DEEPSEEK_API_BASE: &str = "https://api.deepseek.com/chat/completions";
 /// 目录中每个章节的基本信息
 #[derive(Clone)]
 pub struct Chapter {
-    /// 章节的相对路径
+    /// 章节的完整网址
     pub path: String,
     /// 章节标题
     pub title: String,
 }
 
-/// 网络请求及翻译相关操作的封装
-pub struct SyosetuClient {
+/// 提供翻译服务的客户端
+pub struct Translator {
     client: Arc<Client>,
     api_key: String,
     model: String,
 }
 
-impl SyosetuClient {
-    /// 创建新的客户端实例
+impl Translator {
+    /// 创建新的翻译客户端
     pub fn new(api_key: String, model: String) -> Self {
-        SyosetuClient {
+        Translator {
             client: Arc::new(Client::new()),
             api_key,
             model,
-        }
-    }
-
-    /// 抓取目录页面并解析出章节列表
-    pub async fn fetch_directory(&self, url: &str) -> Result<Vec<Chapter>> {
-        let directory_html = self
-            .client
-            .get(url)
-            .header("User-Agent", USER_AGENT)
-            .send()
-            .await?
-            .text()
-            .await?;
-        let document = Html::parse_document(&directory_html);
-        let link_selector = Selector::parse("a.p-eplist__subtitle")
-            .map_err(|e| anyhow!("selector parse error: {e}"))?;
-        let links: Vec<Chapter> = document
-            .select(&link_selector)
-            .filter_map(|el| {
-                let href = el.value().attr("href")?;
-                let text = el
-                    .text()
-                    .map(str::trim)
-                    .filter(|t| !t.is_empty())
-                    .collect::<Vec<_>>()
-                    .join("");
-                Some(Chapter {
-                    path: href.to_string(),
-                    title: text,
-                })
-            })
-            .collect();
-        Ok(links)
-    }
-
-    /// 下载单个章节的正文内容
-    pub async fn fetch_chapter(&self, path: &str) -> Result<String> {
-        let full_url = format!("{SYOSETU_API_BASE}{path}");
-        let content_html = self
-            .client
-            .get(&full_url)
-            .header("User-Agent", USER_AGENT)
-            .send()
-            .await?
-            .text()
-            .await?;
-        let document = Html::parse_document(&content_html);
-        let body_selector = Selector::parse("div.p-novel__body")
-            .map_err(|e| anyhow!("selector parse error: {e}"))?;
-        if let Some(element) = document.select(&body_selector).next() {
-            let content = element
-                .text()
-                .map(str::trim)
-                .filter(|t| !t.is_empty())
-                .collect::<Vec<_>>()
-                .join("\n");
-            Ok(content)
-        } else {
-            Err(anyhow!("body not found"))
         }
     }
 
@@ -200,5 +138,162 @@ impl SyosetuClient {
             .unwrap_or("")
             .to_string();
         Ok(output.split('\n').map(|s| s.to_string()).collect())
+    }
+}
+
+/// 抽象小说站点需要实现的接口
+#[async_trait::async_trait]
+pub trait NovelSite: Send + Sync {
+    /// 根据目录页地址抓取章节列表
+    async fn fetch_directory(&self, url: &str) -> Result<Vec<Chapter>>;
+    /// 下载并解析单章正文
+    async fn fetch_chapter(&self, url: &str) -> Result<String>;
+}
+
+/// ncode.syosetu.com 的实现
+pub struct NcodeSite {
+    client: Arc<Client>,
+}
+
+impl NcodeSite {
+    pub fn new() -> Self {
+        NcodeSite {
+            client: Arc::new(Client::new()),
+        }
+    }
+}
+
+#[async_trait]
+impl NovelSite for NcodeSite {
+    async fn fetch_directory(&self, url: &str) -> Result<Vec<Chapter>> {
+        let directory_html = self
+            .client
+            .get(url)
+            .header("User-Agent", USER_AGENT)
+            .send()
+            .await?
+            .text()
+            .await?;
+        let document = Html::parse_document(&directory_html);
+        let link_selector = Selector::parse("a.p-eplist__subtitle")
+            .map_err(|e| anyhow!("selector parse error: {e}"))?;
+        let links: Vec<Chapter> = document
+            .select(&link_selector)
+            .filter_map(|el| {
+                let href = el.value().attr("href")?;
+                let text = el
+                    .text()
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("");
+                let full = if href.starts_with("http") {
+                    href.to_string()
+                } else {
+                    format!("https://ncode.syosetu.com{href}")
+                };
+                Some(Chapter { path: full, title: text })
+            })
+            .collect();
+        Ok(links)
+    }
+
+    async fn fetch_chapter(&self, url: &str) -> Result<String> {
+        let content_html = self
+            .client
+            .get(url)
+            .header("User-Agent", USER_AGENT)
+            .send()
+            .await?
+            .text()
+            .await?;
+        let document = Html::parse_document(&content_html);
+        let body_selector = Selector::parse("div.p-novel__body")
+            .map_err(|e| anyhow!("selector parse error: {e}"))?;
+        if let Some(element) = document.select(&body_selector).next() {
+            let content = element
+                .text()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+            Ok(content)
+        } else {
+            Err(anyhow!("body not found"))
+        }
+    }
+}
+
+/// syosetu.org 的实现
+pub struct OrgSite {
+    client: Arc<Client>,
+}
+
+impl OrgSite {
+    pub fn new() -> Self {
+        OrgSite {
+            client: Arc::new(Client::new()),
+        }
+    }
+}
+
+#[async_trait]
+impl NovelSite for OrgSite {
+    async fn fetch_directory(&self, url: &str) -> Result<Vec<Chapter>> {
+        let directory_html = self
+            .client
+            .get(url)
+            .header("User-Agent", USER_AGENT)
+            .send()
+            .await?
+            .text()
+            .await?;
+        let document = Html::parse_document(&directory_html);
+        let selector = Selector::parse("div.ss table a[href$='.html']")
+            .map_err(|e| anyhow!("selector parse error: {e}"))?;
+        let base = url.trim_end_matches('/');
+        let base = format!("{}/", base);
+        let links: Vec<Chapter> = document
+            .select(&selector)
+            .filter_map(|el| {
+                let href = el.value().attr("href")?;
+                let title = el.text().collect::<Vec<_>>().join("");
+                let full = if href.starts_with("http") {
+                    href.to_string()
+                } else {
+                    format!("{}{}", base, href.trim_start_matches("./"))
+                };
+                Some(Chapter {
+                    path: full,
+                    title: title.trim().to_string(),
+                })
+            })
+            .collect();
+        Ok(links)
+    }
+
+    async fn fetch_chapter(&self, url: &str) -> Result<String> {
+        let content_html = self
+            .client
+            .get(url)
+            .header("User-Agent", USER_AGENT)
+            .send()
+            .await?
+            .text()
+            .await?;
+        let document = Html::parse_document(&content_html);
+        let body_selector = Selector::parse("div#honbun")
+            .map_err(|e| anyhow!("selector parse error: {e}"))?;
+        if let Some(element) = document.select(&body_selector).next() {
+            let content = element
+                .text()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+            Ok(content)
+        } else {
+            Err(anyhow!("body not found"))
+        }
     }
 }

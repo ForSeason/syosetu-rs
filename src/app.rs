@@ -11,7 +11,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::widgets::ListState;
 
 use crate::memory::{KeywordStore, TranslationStore};
-use crate::syosetu::{Chapter, SyosetuClient};
+use crate::syosetu::{Chapter, NovelSite, Translator};
 use crate::ui::{draw_directory, draw_loading, draw_reading};
 
 /// 应用在目录界面中的输入模式
@@ -111,7 +111,8 @@ impl App {
     pub async fn run(
         mut self,
         url: &str,
-        client: &SyosetuClient,
+        site: &dyn NovelSite,
+        translator: &Translator,
         kw_store: &dyn KeywordStore,
         trans_store: &dyn TranslationStore,
     ) -> Result<()> {
@@ -124,7 +125,7 @@ impl App {
 
         // 读取目录
         terminal.draw(|f| draw_loading(f, "Loading directory..."))?;
-        let chapters = client.fetch_directory(url).await?;
+        let chapters = site.fetch_directory(url).await?;
         self.chapters = chapters;
         self.apply_filter();
         self.state = AppState::Directory;
@@ -182,14 +183,14 @@ impl App {
                                         } else {
                                             self.state = AppState::LoadingChapter;
                                             terminal.draw(|f| draw_loading(f, "Loading chapter..."))?;
-                                            let content = client.fetch_chapter(&chapter.path).await?;
+                                            let content = site.fetch_chapter(&chapter.path).await?;
                                             self.content = content.clone();
                                             let existing: Vec<(String, String)> = self
                                                 .keywords
                                                 .iter()
                                                 .map(|(k, v)| (k.clone(), v.clone()))
                                                 .collect();
-                                            let trans = client.translate_text(&content, &existing).await?;
+                                            let trans = translator.translate_text(&content, &existing).await?;
                                             self.translation = trans.clone();
                                             let existing_lines: Vec<String> = existing
                                                 .iter()
@@ -197,7 +198,7 @@ impl App {
                                                     format!("{{\"japanese\":\"{}\",\"chinese\":\"{}\"}}", jp, zh)
                                                 })
                                                 .collect();
-                                            let new_keywords = client
+                                            let new_keywords = translator
                                                 .extract_keywords(&self.translation, &self.content, existing_lines)
                                                 .await?;
                                             for line in new_keywords {

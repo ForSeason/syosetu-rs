@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use log::error;
+use log::{error, LevelFilter};
 use std::fs::OpenOptions;
 use env_logger::{Builder, Target};
 
@@ -38,6 +38,7 @@ async fn main() -> Result<()> {
         .append(true)
         .open("app.log")?;
     Builder::from_default_env()
+        .filter_level(LevelFilter::Info)
         .target(Target::Pipe(Box::new(log_file)))
         .init();
     let args = Args::parse();

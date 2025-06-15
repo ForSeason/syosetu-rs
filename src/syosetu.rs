@@ -157,8 +157,12 @@ pub struct NcodeSite {
 
 impl NcodeSite {
     pub fn new() -> Self {
+        let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::limited(10))
+            .build()
+            .expect("failed to build reqwest client");
         NcodeSite {
-            client: Arc::new(Client::new()),
+            client: Arc::new(client),
         }
     }
 }
@@ -231,8 +235,12 @@ pub struct OrgSite {
 
 impl OrgSite {
     pub fn new() -> Self {
+        let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::limited(10))
+            .build()
+            .expect("failed to build reqwest client");
         OrgSite {
-            client: Arc::new(Client::new()),
+            client: Arc::new(client),
         }
     }
 }

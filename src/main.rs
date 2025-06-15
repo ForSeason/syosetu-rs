@@ -1,6 +1,8 @@
 use anyhow::Result;
 use clap::Parser;
 use log::error;
+use std::fs::OpenOptions;
+use env_logger::{Builder, Target};
 
 use crate::app::App;
 use crate::memory::{JsonStore, JsonTranslationStore};
@@ -31,7 +33,13 @@ struct Args {
 /// 解析参数并启动应用
 #[tokio::main]
 async fn main() -> Result<()> {
-    env_logger::init();
+    let log_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("app.log")?;
+    Builder::from_default_env()
+        .target(Target::Pipe(Box::new(log_file)))
+        .init();
     let args = Args::parse();
     let novel_id = args
         .url

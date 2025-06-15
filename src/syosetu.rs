@@ -159,6 +159,7 @@ impl NcodeSite {
     pub fn new() -> Self {
         let client = Client::builder()
             .redirect(reqwest::redirect::Policy::limited(10))
+            .cookie_store(true)
             .build()
             .expect("failed to build reqwest client");
         NcodeSite {
@@ -174,6 +175,7 @@ impl NovelSite for NcodeSite {
             .client
             .get(url)
             .header("User-Agent", USER_AGENT)
+            .header("Accept-Language", "en-US,en;q=0.9,ja;q=0.8")
             .send()
             .await?
             .text()
@@ -207,6 +209,7 @@ impl NovelSite for NcodeSite {
             .client
             .get(url)
             .header("User-Agent", USER_AGENT)
+            .header("Accept-Language", "en-US,en;q=0.9,ja;q=0.8")
             .send()
             .await?
             .text()
@@ -237,6 +240,7 @@ impl OrgSite {
     pub fn new() -> Self {
         let client = Client::builder()
             .redirect(reqwest::redirect::Policy::limited(10))
+            .cookie_store(true)
             .build()
             .expect("failed to build reqwest client");
         OrgSite {
@@ -252,6 +256,7 @@ impl NovelSite for OrgSite {
             .client
             .get(url)
             .header("User-Agent", USER_AGENT)
+            .header("Accept-Language", "en-US,en;q=0.9,ja;q=0.8")
             .send()
             .await?
             .text()
@@ -285,6 +290,7 @@ impl NovelSite for OrgSite {
             .client
             .get(url)
             .header("User-Agent", USER_AGENT)
+            .header("Accept-Language", "en-US,en;q=0.9,ja;q=0.8")
             .send()
             .await?
             .text()

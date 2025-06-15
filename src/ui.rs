@@ -24,6 +24,8 @@ pub fn draw_directory(frame: &mut Frame, app: &App, state: &mut ListState) {
             let ch = &app.chapters[i];
             let mark = if app.cached_chapters.contains(&ch.path) {
                 "[C] "
+            } else if app.processing_chapters.contains(&ch.path) {
+                "[P] "
             } else {
                 "[ ] "
             };

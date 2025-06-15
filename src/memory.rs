@@ -47,10 +47,12 @@ impl JsonTranslationStore {
         }
     }
 
-    /// 将内存中的数据写回文件
+    /// 将内存中的数据写回文件，先写入临时文件再原子覆盖，避免意外写入
     fn write_all(&self, data: &HashMap<String, HashMap<String, String>>) -> Result<()> {
         let s = serde_json::to_string_pretty(data)?;
-        fs::write(&self.path, s)?;
+        let tmp_path = self.path.with_extension("tmp");
+        fs::write(&tmp_path, s)?;
+        fs::rename(&tmp_path, &self.path)?;
         Ok(())
     }
 }
@@ -73,7 +75,9 @@ impl JsonStore {
     /// 写回全部数据
     fn write_all(&self, data: &HashMap<String, HashMap<String, String>>) -> Result<()> {
         let s = serde_json::to_string_pretty(data)?;
-        fs::write(&self.path, s)?;
+        let tmp_path = self.path.with_extension("tmp");
+        fs::write(&tmp_path, s)?;
+        fs::rename(&tmp_path, &self.path)?;
         Ok(())
     }
 }

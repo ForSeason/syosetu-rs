@@ -9,10 +9,12 @@ use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScree
 use ratatui::prelude::*;
 use ratatui::backend::CrosstermBackend;
 use ratatui::widgets::ListState;
+use std::sync::{Arc, Mutex};
 
 use crate::memory::{KeywordStore, TranslationStore};
 use crate::syosetu::{Chapter, NovelSite, Translator};
 use crate::ui::{draw_directory, draw_loading, draw_reading};
+use tokio::task::JoinHandle;
 
 /// 应用在目录界面中的输入模式
 #[derive(Clone, Copy, PartialEq)]
@@ -30,8 +32,6 @@ pub enum AppState {
     LoadingDir,
     /// 显示目录列表
     Directory,
-    /// 正在加载章节内容
-    LoadingChapter,
     /// 阅读模式
     Reading,
 }
@@ -50,8 +50,6 @@ pub struct App {
     pub selected: usize,
     /// 搜索框内容
     pub search: String,
-    /// 原文内容
-    pub content: String,
     /// 翻译结果
     pub translation: String,
     /// 阅读时的滚动位置
@@ -59,9 +57,13 @@ pub struct App {
     /// 小说的唯一 id
     pub novel_id: String,
     /// 已知的翻译对照表
-    pub keywords: HashMap<String, String>,
+    pub keywords: Arc<Mutex<HashMap<String, String>>>,
     /// 本地已缓存章节路径
     pub cached_chapters: HashSet<String>,
+    /// 正在处理的章节任务
+    pub processing: HashMap<String, JoinHandle<anyhow::Result<String>>>,
+    /// 当前阅读的章节路径
+    pub current_chapter: Option<String>,
 }
 
 impl App {
@@ -74,12 +76,13 @@ impl App {
             filtered: Vec::new(),
             selected: 0,
             search: String::new(),
-            content: String::new(),
             translation: String::new(),
             scroll: 0,
             novel_id,
-            keywords: HashMap::new(),
+            keywords: Arc::new(Mutex::new(HashMap::new())),
             cached_chapters: HashSet::new(),
+            processing: HashMap::new(),
+            current_chapter: None,
         }
     }
 
@@ -107,14 +110,57 @@ impl App {
         }
     }
 
+    fn spawn_processing(
+        &mut self,
+        chapter: Chapter,
+        site: Arc<dyn NovelSite>,
+        translator: Arc<Translator>,
+        kw_store: Arc<dyn KeywordStore>,
+        trans_store: Arc<dyn TranslationStore>,
+    ) {
+        if self.processing.contains_key(&chapter.path) {
+            return;
+        }
+        let path = chapter.path.clone();
+        let novel_id = self.novel_id.clone();
+        let keywords = self.keywords.clone();
+        let handle: JoinHandle<anyhow::Result<String>> = tokio::spawn(async move {
+            let content = site.fetch_chapter(&path).await?;
+            let existing: Vec<(String, String)> = {
+                let kw = keywords.lock().unwrap();
+                kw.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+            };
+            let trans = translator.translate_text(&content, &existing).await?;
+            let existing_lines: Vec<String> = existing
+                .iter()
+                .map(|(jp, zh)| format!("{{\"japanese\":\"{}\",\"chinese\":\"{}\"}}", jp, zh))
+                .collect();
+            let new_keywords = translator.extract_keywords(&trans, &content, existing_lines).await?;
+            {
+                let mut kw_lock = keywords.lock().unwrap();
+                for line in new_keywords {
+                    if let Ok(val) = serde_json::from_str::<HashMap<String, String>>(&line) {
+                        if let (Some(jp), Some(zh)) = (val.get("japanese"), val.get("chinese")) {
+                            kw_lock.entry(jp.to_string()).or_insert(zh.to_string());
+                        }
+                    }
+                }
+                kw_store.save(&novel_id, &kw_lock)?;
+            }
+            trans_store.save(&novel_id, &path, &trans)?;
+            Ok(trans)
+        });
+        self.processing.insert(chapter.path.clone(), handle);
+    }
+
     /// 主事件循环，处理渲染与用户输入
     pub async fn run(
         mut self,
         url: &str,
-        site: &dyn NovelSite,
-        translator: &Translator,
-        kw_store: &dyn KeywordStore,
-        trans_store: &dyn TranslationStore,
+        site: Arc<dyn NovelSite>,
+        translator: Arc<Translator>,
+        kw_store: Arc<dyn KeywordStore>,
+        trans_store: Arc<dyn TranslationStore>,
     ) -> Result<()> {
         // 初始化终端并进入全屏模式
         enable_raw_mode()?;
@@ -131,7 +177,10 @@ impl App {
         self.state = AppState::Directory;
 
         // 加载翻译对照表以及已缓存章节列表
-        self.keywords = kw_store.load(&self.novel_id)?;
+        {
+            let mut kw_lock = self.keywords.lock().unwrap();
+            *kw_lock = kw_store.load(&self.novel_id)?;
+        }
         self.cached_chapters = trans_store
             .list(&self.novel_id)?
             .into_iter()
@@ -148,7 +197,6 @@ impl App {
             terminal.draw(|f| match self.state {
                 AppState::LoadingDir => draw_loading(f, "Loading directory..."),
                 AppState::Directory => draw_directory(f, &self, &mut list_state),
-                AppState::LoadingChapter => draw_loading(f, "Loading chapter..."),
                 AppState::Reading => draw_reading(f, &self),
             })?;
 
@@ -177,40 +225,21 @@ impl App {
                                     if let Some(&idx) = self.filtered.get(self.selected) {
                                         let chapter = &self.chapters[idx];
                                         self.scroll = 0;
+                                        self.current_chapter = Some(chapter.path.clone());
                                         if let Some(trans) = trans_store.load(&self.novel_id, &chapter.path)? {
                                             self.translation = trans;
                                             self.state = AppState::Reading;
                                         } else {
-                                            self.state = AppState::LoadingChapter;
-                                            terminal.draw(|f| draw_loading(f, "Loading chapter..."))?;
-                                            let content = site.fetch_chapter(&chapter.path).await?;
-                                            self.content = content.clone();
-                                            let existing: Vec<(String, String)> = self
-                                                .keywords
-                                                .iter()
-                                                .map(|(k, v)| (k.clone(), v.clone()))
-                                                .collect();
-                                            let trans = translator.translate_text(&content, &existing).await?;
-                                            self.translation = trans.clone();
-                                            let existing_lines: Vec<String> = existing
-                                                .iter()
-                                                .map(|(jp, zh)| {
-                                                    format!("{{\"japanese\":\"{}\",\"chinese\":\"{}\"}}", jp, zh)
-                                                })
-                                                .collect();
-                                            let new_keywords = translator
-                                                .extract_keywords(&self.translation, &self.content, existing_lines)
-                                                .await?;
-                                            for line in new_keywords {
-                                                if let Ok(val) = serde_json::from_str::<HashMap<String, String>>(&line) {
-                                                    if let (Some(jp), Some(zh)) = (val.get("japanese"), val.get("chinese")) {
-                                                        self.keywords.entry(jp.to_string()).or_insert(zh.to_string());
-                                                    }
-                                                }
+                                            if !self.processing.contains_key(&chapter.path) {
+                                                self.spawn_processing(
+                                                    chapter.clone(),
+                                                    site.clone(),
+                                                    translator.clone(),
+                                                    kw_store.clone(),
+                                                    trans_store.clone(),
+                                                );
                                             }
-                                            kw_store.save(&self.novel_id, &self.keywords)?;
-                                            trans_store.save(&self.novel_id, &chapter.path, &self.translation)?;
-                                            self.cached_chapters.insert(chapter.path.clone());
+                                            self.translation = "Processing...".to_string();
                                             self.state = AppState::Reading;
                                         }
                                     }
@@ -291,6 +320,35 @@ impl App {
                     }
                     Event::Resize(_, _) => {}
                     _ => {}
+                }
+            }
+
+            // 检查后台任务是否完成
+            let finished: Vec<String> = self
+                .processing
+                .iter()
+                .filter_map(|(p, h)| if h.is_finished() { Some(p.clone()) } else { None })
+                .collect();
+            for path in finished {
+                if let Some(handle) = self.processing.remove(&path) {
+                    match handle.await {
+                        Ok(Ok(trans)) => {
+                            self.cached_chapters.insert(path.clone());
+                            if self.current_chapter.as_deref() == Some(&path) {
+                                self.translation = trans;
+                            }
+                        }
+                        Ok(Err(e)) => {
+                            if self.current_chapter.as_deref() == Some(&path) {
+                                self.translation = format!("Error: {e}");
+                            }
+                        }
+                        Err(e) => {
+                            if self.current_chapter.as_deref() == Some(&path) {
+                                self.translation = format!("Task error: {e}");
+                            }
+                        }
+                    }
                 }
             }
 

@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{self};
 use std::time::{Duration, Instant};
+use std::sync::Arc;
 
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, MouseEventKind};
@@ -50,8 +51,6 @@ pub struct App {
     pub selected: usize,
     /// 搜索框内容
     pub search: String,
-    /// 原文内容
-    pub content: String,
     /// 翻译结果
     pub translation: String,
     /// 阅读时的滚动位置
@@ -62,6 +61,10 @@ pub struct App {
     pub keywords: HashMap<String, String>,
     /// 本地已缓存章节路径
     pub cached_chapters: HashSet<String>,
+    /// 正在后台处理的章节路径
+    pub processing_chapters: HashSet<String>,
+    /// 后台处理任务的句柄
+    pub handle: Option<tokio::task::JoinHandle<anyhow::Result<(String, String, HashMap<String, String>)>>>,
 }
 
 impl App {
@@ -74,12 +77,13 @@ impl App {
             filtered: Vec::new(),
             selected: 0,
             search: String::new(),
-            content: String::new(),
             translation: String::new(),
             scroll: 0,
             novel_id,
             keywords: HashMap::new(),
             cached_chapters: HashSet::new(),
+            processing_chapters: HashSet::new(),
+            handle: None,
         }
     }
 
@@ -111,10 +115,10 @@ impl App {
     pub async fn run(
         mut self,
         url: &str,
-        site: &dyn NovelSite,
-        translator: &Translator,
-        kw_store: &dyn KeywordStore,
-        trans_store: &dyn TranslationStore,
+        site: Arc<dyn NovelSite>,
+        translator: Arc<Translator>,
+        kw_store: Arc<dyn KeywordStore>,
+        trans_store: Arc<dyn TranslationStore>,
     ) -> Result<()> {
         // 初始化终端并进入全屏模式
         enable_raw_mode()?;
@@ -175,43 +179,48 @@ impl App {
                                 }
                                 KeyCode::Enter => {
                                     if let Some(&idx) = self.filtered.get(self.selected) {
-                                        let chapter = &self.chapters[idx];
+                                        let chapter = self.chapters[idx].clone();
                                         self.scroll = 0;
                                         if let Some(trans) = trans_store.load(&self.novel_id, &chapter.path)? {
                                             self.translation = trans;
                                             self.state = AppState::Reading;
-                                        } else {
+                                        } else if self.handle.is_none() {
                                             self.state = AppState::LoadingChapter;
-                                            terminal.draw(|f| draw_loading(f, "Loading chapter..."))?;
-                                            let content = site.fetch_chapter(&chapter.path).await?;
-                                            self.content = content.clone();
-                                            let existing: Vec<(String, String)> = self
-                                                .keywords
-                                                .iter()
-                                                .map(|(k, v)| (k.clone(), v.clone()))
-                                                .collect();
-                                            let trans = translator.translate_text(&content, &existing).await?;
-                                            self.translation = trans.clone();
-                                            let existing_lines: Vec<String> = existing
-                                                .iter()
-                                                .map(|(jp, zh)| {
-                                                    format!("{{\"japanese\":\"{}\",\"chinese\":\"{}\"}}", jp, zh)
-                                                })
-                                                .collect();
-                                            let new_keywords = translator
-                                                .extract_keywords(&self.translation, &self.content, existing_lines)
-                                                .await?;
-                                            for line in new_keywords {
-                                                if let Ok(val) = serde_json::from_str::<HashMap<String, String>>(&line) {
-                                                    if let (Some(jp), Some(zh)) = (val.get("japanese"), val.get("chinese")) {
-                                                        self.keywords.entry(jp.to_string()).or_insert(zh.to_string());
+                                            self.processing_chapters.insert(chapter.path.clone());
+                                            let site = site.clone();
+                                            let translator = translator.clone();
+                                            let kw = kw_store.clone();
+                                            let ts = trans_store.clone();
+                                            let novel_id = self.novel_id.clone();
+                                            let existing = self.keywords.clone();
+                                            self.handle = Some(tokio::spawn(async move {
+                                                let content = site.fetch_chapter(&chapter.path).await?;
+                                                let existing_pairs: Vec<(String, String)> = existing
+                                                    .iter()
+                                                    .map(|(k, v)| (k.clone(), v.clone()))
+                                                    .collect();
+                                                let trans = translator.translate_text(&content, &existing_pairs).await?;
+                                                let existing_lines: Vec<String> = existing_pairs
+                                                    .iter()
+                                                    .map(|(jp, zh)| {
+                                                        format!("{{\"japanese\":\"{}\",\"chinese\":\"{}\"}}", jp, zh)
+                                                    })
+                                                    .collect();
+                                                let new_keywords = translator
+                                                    .extract_keywords(&trans, &content, existing_lines)
+                                                    .await?;
+                                                let mut keywords = existing;
+                                                for line in new_keywords {
+                                                    if let Ok(val) = serde_json::from_str::<HashMap<String, String>>(&line) {
+                                                        if let (Some(jp), Some(zh)) = (val.get("japanese"), val.get("chinese")) {
+                                                            keywords.entry(jp.to_string()).or_insert(zh.to_string());
+                                                        }
                                                     }
                                                 }
-                                            }
-                                            kw_store.save(&self.novel_id, &self.keywords)?;
-                                            trans_store.save(&self.novel_id, &chapter.path, &self.translation)?;
-                                            self.cached_chapters.insert(chapter.path.clone());
-                                            self.state = AppState::Reading;
+                                                kw.save(&novel_id, &keywords)?;
+                                                ts.save(&novel_id, &chapter.path, &trans)?;
+                                                Ok((chapter.path, trans, keywords))
+                                            }));
                                         }
                                     }
                                 }
@@ -291,6 +300,24 @@ impl App {
                     }
                     Event::Resize(_, _) => {}
                     _ => {}
+                }
+            }
+
+            if let Some(handle) = &mut self.handle {
+                if handle.is_finished() {
+                    match handle.await {
+                        Ok(Ok((path, trans, keywords))) => {
+                            self.translation = trans;
+                            self.keywords = keywords;
+                            self.cached_chapters.insert(path.clone());
+                            self.processing_chapters.remove(&path);
+                            self.state = AppState::Reading;
+                        }
+                        Ok(Err(_)) | Err(_) => {
+                            self.state = AppState::Directory;
+                        }
+                    }
+                    self.handle = None;
                 }
             }
 

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use anyhow::Result;
 
@@ -15,6 +16,7 @@ pub trait KeywordStore: Send + Sync {
 /// 将翻译表存储为 JSON 文件
 pub struct JsonStore {
     path: PathBuf,
+    lock: Mutex<()>,
 }
 
 /// 缓存章节翻译内容的接口
@@ -30,16 +32,21 @@ pub trait TranslationStore: Send + Sync {
 /// 简单的 JSON 文件实现，用于保存章节翻译
 pub struct JsonTranslationStore {
     path: PathBuf,
+    lock: Mutex<()>,
 }
 
 impl JsonTranslationStore {
     /// 创建一个新的 JSON 翻译存储
     pub fn new<P: Into<PathBuf>>(path: P) -> Self {
-        JsonTranslationStore { path: path.into() }
+        JsonTranslationStore {
+            path: path.into(),
+            lock: Mutex::new(()),
+        }
     }
 
     /// 读取整个文件并解析为嵌套的 HashMap
     fn read_all(&self) -> HashMap<String, HashMap<String, String>> {
+        let _guard = self.lock.lock().unwrap();
         if let Ok(content) = fs::read_to_string(&self.path) {
             serde_json::from_str(&content).unwrap_or_default()
         } else {
@@ -49,8 +56,11 @@ impl JsonTranslationStore {
 
     /// 将内存中的数据写回文件
     fn write_all(&self, data: &HashMap<String, HashMap<String, String>>) -> Result<()> {
+        let _guard = self.lock.lock().unwrap();
         let s = serde_json::to_string_pretty(data)?;
-        fs::write(&self.path, s)?;
+        let tmp = self.path.with_extension("tmp");
+        fs::write(&tmp, s)?;
+        fs::rename(&tmp, &self.path)?;
         Ok(())
     }
 }
@@ -58,11 +68,15 @@ impl JsonTranslationStore {
 impl JsonStore {
     /// 创建一个新的 JSON 存储
     pub fn new<P: Into<PathBuf>>(path: P) -> Self {
-        JsonStore { path: path.into() }
+        JsonStore {
+            path: path.into(),
+            lock: Mutex::new(()),
+        }
     }
 
     /// 读取文件中的全部内容
     fn read_all(&self) -> HashMap<String, HashMap<String, String>> {
+        let _guard = self.lock.lock().unwrap();
         if let Ok(content) = fs::read_to_string(&self.path) {
             serde_json::from_str(&content).unwrap_or_default()
         } else {
@@ -72,8 +86,11 @@ impl JsonStore {
 
     /// 写回全部数据
     fn write_all(&self, data: &HashMap<String, HashMap<String, String>>) -> Result<()> {
+        let _guard = self.lock.lock().unwrap();
         let s = serde_json::to_string_pretty(data)?;
-        fs::write(&self.path, s)?;
+        let tmp = self.path.with_extension("tmp");
+        fs::write(&tmp, s)?;
+        fs::rename(&tmp, &self.path)?;
         Ok(())
     }
 }

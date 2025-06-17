@@ -3,6 +3,7 @@ use clap::Parser;
 use env_logger::{Builder, Target};
 use log::{LevelFilter, error};
 use std::fs::OpenOptions;
+use std::sync::Arc;
 
 use crate::app::App;
 use crate::memory::{JsonStore, JsonTranslationStore};
@@ -50,17 +51,17 @@ async fn main() -> Result<()> {
         .unwrap_or("novel")
         .to_string();
 
-    let translator = Translator::new(args.api_key, args.model);
-    let site: Box<dyn NovelSite> = if args.url.contains("syosetu.org") {
-        Box::new(OrgSite::new())
+    let translator = Arc::new(Translator::new(args.api_key, args.model));
+    let site: Arc<dyn NovelSite> = if args.url.contains("syosetu.org") {
+        Arc::new(OrgSite::new())
     } else {
-        Box::new(NcodeSite::new())
+        Arc::new(NcodeSite::new())
     };
-    let store = JsonStore::new("keywords.json");
-    let trans_store = JsonTranslationStore::new("translations.json");
+    let store = Arc::new(JsonStore::new("keywords.json"));
+    let trans_store = Arc::new(JsonTranslationStore::new("translations.json"));
     let app = App::new(novel_id);
     let result = app
-        .run(&args.url, site.as_ref(), &translator, &store, &trans_store)
+        .run(&args.url, site, translator, store, trans_store)
         .await;
     if let Err(ref e) = result {
         error!("Application error: {:?}", e);
